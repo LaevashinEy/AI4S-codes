@@ -1,0 +1,697 @@
+# 第 1 格：安装依赖
+!pip install numpy torch matplotlib
+# 第 2 格：设置你的个性化参数
+import random
+import numpy as np
+import torch
+
+seed = 276019
+design_seed = 276020
+lambda_target = 640  # nm
+
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+# 第 3 格：写 TMM 函数
+def tmm_reflectance(d_list, wavelengths):
+    # 这里实现传输矩阵法
+    ...
+    return R
+# 第 4 格：生成 5000 组数据
+# 用 TMM 算反射光谱
+# 第 5 格：定义 MLP
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(4, 128),
+    nn.ReLU(),
+    nn.Linear(128, 128),
+    nn.ReLU(),
+    nn.Linear(128, 64),
+    nn.ReLU(),
+    nn.Linear(64, 41)
+# 第 6 格：训练 MLP
+# 第 7 格：用 design_seed 生成 10000 组候选，MLP 筛选，TMM 验证
+
+
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+
+# ===== 个性化参数：学号 2022276019 =====
+seed = 276019
+design_seed = 276020
+lambda_target = 640  # nm
+
+# 固定随机种子
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+
+# ===== 统一研究对象参数 =====
+nH = 2.30
+nL = 1.45
+ns = 1.52
+
+# 膜系：Air / H / L / H / L / Glass
+# 4 层，折射率依次为 nH, nL, nH, nL
+layer_indices = [nH, nL, nH, nL]
+
+# 膜厚范围 nm
+d_min = 40.0
+d_max = 180.0
+
+# 波长范围 nm，步长 10 nm，共 41 点
+wavelengths = np.arange(400, 801, 10)  # 400, 410, ..., 800
+n_wavelengths = len(wavelengths)       # 41
+
+# 数据集规模
+n_total = 5000
+n_train = 4000
+n_val = 500
+n_test = 500
+
+print("波长点数：", n_wavelengths)
+print("波长范围：", wavelengths[0], "-", wavelengths[-1])
+def tmm_reflectance(d_list, wavelengths, n_list, n_sub, n_air=1.0):
+    """
+    传输矩阵法计算多层膜反射光谱。
+
+    参数：
+        d_list: 各层膜厚，单位 nm，长度 = 层数
+        wavelengths: 波长数组，单位 nm
+        n_list: 各层折射率，长度 = 层数
+        n_sub: 基底折射率
+        n_air: 入射介质折射率，默认空气 n=1.0
+
+    返回：
+        R: 反射率数组，形状与 wavelengths 相同
+    """
+    d_list = np.asarray(d_list, dtype=float)
+    n_list = np.asarray(n_list, dtype=float)
+    wavelengths = np.asarray(wavelengths, dtype=float)
+
+    R = np.zeros_like(wavelengths, dtype=float)
+
+    for i, lam in enumerate(wavelengths):
+        # 相位厚度 delta = 2*pi*n*d / lambda
+        delta = 2 * np.pi * n_list * d_list / lam
+
+        # 每一层的特征矩阵
+        M_total = np.eye(2, dtype=complex)
+
+        for n_j, delta_j in zip(n_list, delta):
+            M_j = np.array([
+                [np.cos(delta_j), 1j * np.sin(delta_j) / n_j],
+                [1j * n_j * np.sin(delta_j), np.cos(delta_j)]
+            ], dtype=complex)
+            M_total = M_total @ M_j
+
+        # 入射介质和基底导纳
+        eta_0 = n_air
+        eta_s = n_sub
+
+        # 反射系数
+        B = M_total[0, 0] + M_total[0, 1] * eta_s
+        C = M_total[1, 0] + M_total[1, 1] * eta_s
+
+        r = (eta_0 * B - C) / (eta_0 * B + C)
+        R[i] = np.abs(r) ** 2
+
+    return R
+def generate_dataset(n_samples, layer_indices, n_sub, wavelengths,
+                     d_min=40.0, d_max=180.0):
+    """
+    生成膜厚-反射光谱数据集。
+
+    返回：
+        X: 膜厚，形状 (n_samples, 4)
+        Y: 反射光谱，形状 (n_samples, 41)
+    """
+    n_layers = len(layer_indices)
+
+    X = np.random.uniform(d_min, d_max, size=(n_samples, n_layers))
+    Y = np.zeros((n_samples, len(wavelengths)), dtype=float)
+
+    for i in range(n_samples):
+        Y[i] = tmm_reflectance(
+            d_list=X[i],
+            wavelengths=wavelengths,
+            n_list=layer_indices,
+            n_sub=n_sub
+        )
+
+    return X, Y
+
+
+# 生成 5000 组数据
+X_all, Y_all = generate_dataset(
+    n_samples=n_total,
+    layer_indices=layer_indices,
+    n_sub=ns,
+    wavelengths=wavelengths,
+    d_min=d_min,
+    d_max=d_max
+)
+
+print("X_all shape:", X_all.shape)
+print("Y_all shape:", Y_all.shape)
+# 固定划分：前 4000 训练，接下来 500 验证，最后 500 测试
+X_train = X_all[:n_train]
+Y_train = Y_all[:n_train]
+
+X_val = X_all[n_train:n_train + n_val]
+Y_val = Y_all[n_train:n_train + n_val]
+
+X_test = X_all[n_train + n_val:n_train + n_val + n_test]
+Y_test = Y_all[n_train + n_val:n_train + n_val + n_test]
+
+print("训练集：", X_train.shape, Y_train.shape)
+print("验证集：", X_val.shape, Y_val.shape)
+print("测试集：", X_test.shape, Y_test.shape)
+def to_tensor(X, Y):
+    X_t = torch.tensor(X, dtype=torch.float32)
+    Y_t = torch.tensor(Y, dtype=torch.float32)
+    return TensorDataset(X_t, Y_t)
+
+train_dataset = to_tensor(X_train, Y_train)
+val_dataset = to_tensor(X_val, Y_val)
+test_dataset = to_tensor(X_test, Y_test)
+
+batch_size = 64
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+class MLP(nn.Module):
+    def __init__(self, input_dim=4, output_dim=41):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+model = MLP(input_dim=4, output_dim=n_wavelengths)
+
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+print(model)
+def train_one_epoch(model, loader, criterion, optimizer, device):
+    model.train()
+    total_loss = 0.0
+    for X_batch, Y_batch in loader:
+        X_batch = X_batch.to(device)
+        Y_batch = Y_batch.to(device)
+
+        optimizer.zero_grad()
+        pred = model(X_batch)
+        loss = criterion(pred, Y_batch)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * X_batch.size(0)
+
+    return total_loss / len(loader.dataset)
+
+
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for X_batch, Y_batch in loader:
+            X_batch = X_batch.to(device)
+            Y_batch = Y_batch.to(device)
+            pred = model(X_batch)
+            loss = criterion(pred, Y_batch)
+            total_loss += loss.item() * X_batch.size(0)
+    return total_loss / len(loader.dataset)
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+n_epochs = 200
+best_val_loss = float("inf")
+train_losses = []
+val_losses = []
+
+for epoch in range(n_epochs):
+    train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    val_loss = evaluate(model, val_loader, criterion, device)
+
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        torch.save(model.state_dict(), "best_mlp.pth")
+
+    if (epoch + 1) % 20 == 0:
+        print(f"Epoch [{epoch+1}/{n_epochs}] "
+              f"Train Loss: {train_loss:.6f} "
+              f"Val Loss: {val_loss:.6f}")
+
+print("最佳验证损失：", best_val_loss)
+model.load_state_dict(torch.load("best_mlp.pth"))
+test_loss = evaluate(model, test_loader, criterion, device)
+print("测试集 MSE：", test_loss)
+
+# 计算平均绝对误差 MAE
+model.eval()
+with torch.no_grad():
+    X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+    Y_test_t = torch.tensor(Y_test, dtype=torch.float32).to(device)
+    Y_pred = model(X_test_t)
+
+mae = torch.mean(torch.abs(Y_pred - Y_test_t)).item()
+print("测试集 MAE：", mae)
+def train_with_subset(n_subset, X_pool, Y_pool, X_val, Y_val,
+                      n_epochs=100, batch_size=64, lr=1e-3):
+    """
+    从训练池中取前 n_subset 组训练，验证集不变。
+    """
+    X_sub = X_pool[:n_subset]
+    Y_sub = Y_pool[:n_subset]
+
+    dataset = to_tensor(X_sub, Y_sub)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    val_dataset = to_tensor(X_val, Y_val)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    model = MLP(input_dim=4, output_dim=n_wavelengths).to(device)
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(n_epochs):
+        train_one_epoch(model, loader, criterion, optimizer, device)
+
+    val_loss = evaluate(model, val_loader, criterion, device)
+    return model, val_loss
+
+
+subset_sizes = [500, 1000, 2000, 4000]
+subset_results = {}
+
+for n_sub in subset_sizes:
+    _, val_loss = train_with_subset(
+        n_subset=n_sub,
+        X_pool=X_train,
+        Y_pool=Y_train,
+        X_val=X_val,
+        Y_val=Y_val,
+        n_epochs=100
+    )
+    subset_results[n_sub] = val_loss
+    print(f"训练集大小 {n_sub}: 验证 MSE = {val_loss:.6f}")
+# 设计阶段使用 design_seed
+np.random.seed(design_seed)
+random.seed(design_seed)
+torch.manual_seed(design_seed)
+
+n_candidates = 10000
+
+X_candidates = np.random.uniform(
+    d_min, d_max, size=(n_candidates, len(layer_indices))
+)
+
+# 用 MLP 快速预测
+model.eval()
+with torch.no_grad():
+    X_cand_t = torch.tensor(X_candidates, dtype=torch.float32).to(device)
+    Y_cand_pred = model(X_cand_t).cpu().numpy()
+
+print("候选膜厚 shape：", X_candidates.shape)
+print("候选光谱 shape：", Y_cand_pred.shape)
+# 找到 640 nm 对应的索引
+target_idx = np.argmin(np.abs(wavelengths - lambda_target))
+print("目标波长索引：", target_idx, "实际波长：", wavelengths[target_idx])
+
+# 目标：在 640 nm 处反射率尽量高（或按你题目要求调整）
+R_target_pred = Y_cand_pred[:, target_idx]
+
+# 按预测反射率从高到低排序
+top_k = 20
+top_indices = np.argsort(R_target_pred)[::-1][:top_k]
+
+print("Top 候选索引：", top_indices)
+print("Top 候选预测反射率：", R_target_pred[top_indices])
+top_d_list = X_candidates[top_indices]
+
+R_top_tmm = np.zeros((top_k, n_wavelengths), dtype=float)
+
+for i, d in enumerate(top_d_list):
+    R_top_tmm[i] = tmm_reflectance(
+        d_list=d,
+        wavelengths=wavelengths,
+        n_list=layer_indices,
+        n_sub=ns
+    )
+
+R_top_tmm_target = R_top_tmm[:, target_idx]
+
+print("TMM 验证结果（640 nm 处反射率）：")
+for i in range(top_k):
+    print(f"候选 {i+1}: 膜厚 = {top_d_list[i]}, "
+          f"MLP 预测 R = {R_target_pred[top_indices[i]]:.4f}, "
+          f"TMM 验证 R = {R_top_tmm_target[i]:.4f}")
+np.savez("dataset.npz",
+         X_all=X_all, Y_all=Y_all,
+         X_train=X_train, Y_train=Y_train,
+         X_val=X_val, Y_val=Y_val,
+         X_test=X_test, Y_test=Y_test,
+         wavelengths=wavelengths)
+
+torch.save(model.state_dict(), "mlp_model.pth")
+
+print("数据与模型已保存。")
+
+
+
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import numpy as np
+import torch
+
+# 中文字体，防止乱码
+mpl.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+mpl.rcParams['axes.unicode_minus'] = False
+
+# 统一风格
+plt.style.use('seaborn-v0_8-whitegrid')
+
+# 保存图片的文件夹
+import os
+os.makedirs("figures", exist_ok=True)
+
+def save_fig(name):
+    plt.tight_layout()
+    plt.savefig(f"figures/{name}.png", dpi=300, bbox_inches='tight')
+    plt.show()
+def draw_framework():
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.axis('off')
+
+    boxes = [
+        ("物理模型\nAir/H/L/H/L/Glass", 0.5, 0.9),
+        ("TMM\n生成 5000 组数据", 0.5, 0.72),
+        ("数据划分\n4000/500/500", 0.5, 0.54),
+        ("MLP 代理模型\n4→128→128→64→41", 0.5, 0.36),
+        ("MLP 辅助设计\n10000 组候选筛选", 0.5, 0.18),
+        ("TMM 最终验证\nTop 候选", 0.5, 0.0),
+    ]
+
+    for text, x, y in boxes:
+        ax.add_patch(plt.Rectangle((x-0.18, y-0.055), 0.36, 0.11,
+                                   fill=True, facecolor='#E8F0FE',
+                                   edgecolor='#1A73E8', linewidth=2))
+        ax.text(x, y, text, ha='center', va='center', fontsize=11)
+
+    for i in range(len(boxes)-1):
+        y1 = boxes[i][2] - 0.055
+        y2 = boxes[i+1][2] + 0.055
+        ax.annotate('', xy=(0.5, y2), xytext=(0.5, y1),
+                    arrowprops=dict(arrowstyle='->', color='#1A73E8', lw=2))
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.1, 1.0)
+    ax.set_title("AI4S 薄膜光谱预测与辅助设计总体框架", fontsize=14, pad=10)
+    save_fig("fig1_framework")
+
+draw_framework()
+def draw_structure():
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.axis('off')
+
+    layers = [
+        ("Air", 1.0, '#FFFFFF'),
+        ("H  n=2.30", 2.30, '#FFD966'),
+        ("L  n=1.45", 1.45, '#9FC5E8'),
+        ("H  n=2.30", 2.30, '#FFD966'),
+        ("L  n=1.45", 1.45, '#9FC5E8'),
+        ("Glass  n=1.52", 1.52, '#B6D7A8'),
+    ]
+
+    y = 0
+    height = 1.0
+    for name, n, color in layers:
+        ax.add_patch(plt.Rectangle((0, y), 4, height,
+                                   facecolor=color, edgecolor='black'))
+        ax.text(2, y + height/2, name, ha='center', va='center', fontsize=11)
+        y += height
+
+    # 入射光
+    ax.annotate('', xy=(2, y), xytext=(2, y+1.2),
+                arrowprops=dict(arrowstyle='->', color='red', lw=2))
+    ax.text(2.2, y+0.8, "入射光", color='red', fontsize=11)
+
+    # 反射光
+    ax.annotate('', xy=(1.4, y+1.2), xytext=(1.4, y),
+                arrowprops=dict(arrowstyle='->', color='blue', lw=2))
+    ax.text(0.2, y+0.8, "反射光", color='blue', fontsize=11)
+
+    ax.set_xlim(-0.5, 5)
+    ax.set_ylim(-0.5, y+1.8)
+    ax.set_title("膜系结构 Air/H/L/H/L/Glass", fontsize=13)
+    save_fig("fig2_structure")
+
+draw_structure()
+def draw_thickness_distribution():
+    fig, axes = plt.subplots(1, 4, figsize=(14, 3.5))
+    labels = ['d1 (H)', 'd2 (L)', 'd3 (H)', 'd4 (L)']
+    for i in range(4):
+        axes[i].hist(X_all[:, i], bins=40, color='#1A73E8', alpha=0.8)
+        axes[i].set_title(labels[i])
+        axes[i].set_xlabel("膜厚 (nm)")
+        axes[i].set_ylabel("频数")
+    fig.suptitle("5000 组数据膜厚分布", fontsize=14)
+    save_fig("fig3_thickness_dist")
+
+draw_thickness_distribution()
+def draw_spectra_examples():
+    plt.figure(figsize=(7, 4.5))
+    for i in range(5):
+        plt.plot(wavelengths, Y_all[i], label=f"样本 {i+1}")
+    plt.axvline(lambda_target, color='red', linestyle='--',
+                label=f"target = {lambda_target} nm")
+    plt.xlabel("波长 (nm)")
+    plt.ylabel("反射率 R")
+    plt.title("TMM 生成的反射光谱示例")
+    plt.legend(fontsize=8)
+    save_fig("fig4_spectra_examples")
+
+draw_spectra_examples()
+def draw_mlp_structure():
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.axis('off')
+
+    layer_sizes = [4, 128, 128, 64, 41]
+    layer_names = ["输入\n4 膜厚", "隐藏层1\n128", "隐藏层2\n128",
+                   "隐藏层3\n64", "输出\n41 光谱"]
+    x_positions = np.linspace(0.1, 0.9, len(layer_sizes))
+
+    for x, size, name in zip(x_positions, layer_sizes, layer_names):
+        n_show = min(size, 10)
+        ys = np.linspace(0.2, 0.8, n_show)
+        for y in ys:
+            ax.add_patch(plt.Circle((x, y), 0.012,
+                                    facecolor='#1A73E8', edgecolor='none'))
+        ax.text(x, 0.05, name, ha='center', va='center', fontsize=10)
+
+    for i in range(len(layer_sizes)-1):
+        x1, x2 = x_positions[i], x_positions[i+1]
+        ys1 = np.linspace(0.2, 0.8, min(layer_sizes[i], 10))
+        ys2 = np.linspace(0.2, 0.8, min(layer_sizes[i+1], 10))
+        for y1 in ys1:
+            for y2 in ys2:
+                ax.plot([x1, x2], [y1, y2], color='#CCCCCC',
+                        linewidth=0.3, zorder=0)
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_title("MLP 结构：4 → 128 → 128 → 64 → 41", fontsize=14)
+    save_fig("fig5_mlp_structure")
+
+draw_mlp_structure()
+def draw_training_curve():
+    plt.figure(figsize=(7, 4.5))
+    plt.plot(train_losses, label='训练损失')
+    plt.plot(val_losses, label='验证损失')
+    plt.yscale('log')
+    plt.xlabel("Epoch")
+    plt.ylabel("MSE Loss (log)")
+    plt.title("MLP 训练与验证损失曲线")
+    plt.legend()
+    save_fig("fig6_training_curve")
+
+# 前提：你已经跑过训练，train_losses, val_losses 存在
+draw_training_curve()
+def draw_prediction_example(sample_idx=0):
+    model.eval()
+    with torch.no_grad():
+        x = torch.tensor(X_test[sample_idx:sample_idx+1],
+                         dtype=torch.float32).to(device)
+        y_pred = model(x).cpu().numpy()[0]
+    y_true = Y_test[sample_idx]
+
+    plt.figure(figsize=(7, 4.5))
+    plt.plot(wavelengths, y_true, 'o-', label='TMM 真实值', markersize=4)
+    plt.plot(wavelengths, y_pred, 's--', label='MLP 预测值', markersize=4)
+    plt.axvline(lambda_target, color='red', linestyle=':',
+                label=f"target = {lambda_target} nm")
+    plt.xlabel("波长 (nm)")
+    plt.ylabel("反射率 R")
+    plt.title(f"测试集样本 {sample_idx} 光谱预测对比")
+    plt.legend()
+    save_fig("fig7_prediction_example")
+
+draw_prediction_example(0)
+def draw_error_distribution():
+    model.eval()
+    with torch.no_grad():
+        X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+        Y_pred = model(X_test_t).cpu().numpy()
+
+    errors = np.abs(Y_pred - Y_test).flatten()
+
+    plt.figure(figsize=(7, 4.5))
+    plt.hist(errors, bins=50, color='#1A73E8', alpha=0.85)
+    plt.xlabel("绝对误差 |R_pred - R_true|")
+    plt.ylabel("频数")
+    plt.title("测试集反射率预测绝对误差分布")
+    save_fig("fig8_error_distribution")
+
+draw_error_distribution()
+def draw_scatter_pred_true():
+    model.eval()
+    with torch.no_grad():
+        X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+        Y_pred = model(X_test_t).cpu().numpy()
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(Y_test.flatten(), Y_pred.flatten(),
+                s=3, alpha=0.3, color='#1A73E8')
+    plt.plot([0, 1], [0, 1], 'r--', label='理想 y=x')
+    plt.xlabel("TMM 真实反射率")
+    plt.ylabel("MLP 预测反射率")
+    plt.title("预测值 vs 真实值")
+    plt.legend()
+    save_fig("fig9_scatter_pred_true")
+
+draw_scatter_pred_true()
+def draw_subset_effect():
+    sizes = list(subset_results.keys())
+    losses = list(subset_results.values())
+
+    plt.figure(figsize=(7, 4.5))
+    plt.plot(sizes, losses, 'o-', color='#1A73E8', markersize=8)
+    plt.xlabel("训练集大小")
+    plt.ylabel("验证集 MSE")
+    plt.title("训练数据量对预测误差的影响")
+    plt.xticks(sizes)
+    plt.yscale('log')
+    save_fig("fig10_subset_effect")
+
+draw_subset_effect()
+def draw_candidate_distribution():
+    plt.figure(figsize=(7, 4.5))
+    plt.hist(R_target_pred, bins=50, color='#34A853', alpha=0.85)
+    plt.axvline(R_target_pred[top_indices[0]], color='red',
+                linestyle='--', label='Top 1 预测')
+    plt.xlabel(f"{lambda_target} nm 处预测反射率")
+    plt.ylabel("候选数")
+    plt.title("10000 组候选膜系在目标波长处的预测反射率分布")
+    plt.legend()
+    save_fig("fig11_candidate_distribution")
+
+draw_candidate_distribution()
+def draw_top_validation():
+    x = np.arange(top_k)
+    width = 0.35
+
+    plt.figure(figsize=(10, 4.5))
+    plt.bar(x - width/2, R_target_pred[top_indices],
+            width, label='MLP 预测', color='#1A73E8')
+    plt.bar(x + width/2, R_top_tmm_target,
+            width, label='TMM 验证', color='#EA4335')
+    plt.xlabel("Top 候选编号")
+    plt.ylabel(f"{lambda_target} nm 处反射率")
+    plt.title("Top 候选：MLP 预测 vs TMM 验证")
+    plt.xticks(x, [f"{i+1}" for i in x])
+    plt.legend()
+    save_fig("fig12_top_validation")
+
+draw_top_validation()
+def draw_top1_spectrum():
+    best_idx = top_indices[0]
+    best_d = X_candidates[best_idx]
+    R_tmm = tmm_reflectance(best_d, wavelengths, layer_indices, ns)
+    R_mlp = Y_cand_pred[best_idx]
+
+    plt.figure(figsize=(7, 4.5))
+    plt.plot(wavelengths, R_tmm, 'o-', label='TMM 验证', markersize=4)
+    plt.plot(wavelengths, R_mlp, 's--', label='MLP 预测', markersize=4)
+    plt.axvline(lambda_target, color='red', linestyle=':',
+                label=f"target = {lambda_target} nm")
+    plt.xlabel("波长 (nm)")
+    plt.ylabel("反射率 R")
+    plt.title(f"Top 1 候选光谱对比\n膜厚 = {np.round(best_d, 2)} nm")
+    plt.legend()
+    save_fig("fig13_top1_spectrum")
+
+draw_top1_spectrum()
+def draw_failure_case():
+    # 找 MLP 预测与 TMM 差异最大的候选
+    diff = np.abs(R_target_pred - np.array([
+        tmm_reflectance(X_candidates[i], wavelengths, layer_indices, ns)[target_idx]
+        for i in range(len(X_candidates))
+    ]))
+    worst_idx = np.argmax(diff)
+
+    R_tmm_worst = tmm_reflectance(X_candidates[worst_idx],
+                                  wavelengths, layer_indices, ns)
+    R_mlp_worst = Y_cand_pred[worst_idx]
+
+    plt.figure(figsize=(7, 4.5))
+    plt.plot(wavelengths, R_tmm_worst, 'o-', label='TMM 真实', markersize=4)
+    plt.plot(wavelengths, R_mlp_worst, 's--', label='MLP 预测', markersize=4)
+    plt.axvline(lambda_target, color='red', linestyle=':',
+                label=f"target = {lambda_target} nm")
+    plt.xlabel("波长 (nm)")
+    plt.ylabel("反射率 R")
+    plt.title(f"失败案例：预测偏差最大的候选\n膜厚 = {np.round(X_candidates[worst_idx], 2)} nm")
+    plt.legend()
+    save_fig("fig14_failure_case")
+
+draw_failure_case()
+def plot_all():
+    draw_framework()
+    draw_structure()
+    draw_thickness_distribution()
+    draw_spectra_examples()
+    draw_mlp_structure()
+    draw_training_curve()
+    draw_prediction_example(0)
+    draw_error_distribution()
+    draw_scatter_pred_true()
+    draw_subset_effect()
+    draw_candidate_distribution()
+    draw_top_validation()
+    draw_top1_spectrum()
+    draw_failure_case()
+
+# 取消注释运行：
+# plot_all()
+)
+# 第 6 格：训练 MLP# 第 6 格：训练 MLP
